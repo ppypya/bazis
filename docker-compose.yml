@@ -1,0 +1,84 @@
+name: payment-processing
+
+x-app: &app
+  build: .
+  image: payment-processing:local
+  environment:
+    API_KEY: ${API_KEY:?Copy env.template to .env and set API_KEY}
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-payments}:${POSTGRES_PASSWORD:-payments}@postgres:5432/${POSTGRES_DB:-payments}
+    RABBITMQ_URL: amqp://${RABBITMQ_USER:-payments}:${RABBITMQ_PASSWORD:-payments}@rabbitmq:5672/
+    RETRY_DELAY_SECONDS: ${RETRY_DELAY_SECONDS:-5}
+    OUTBOX_POLL_SECONDS: ${OUTBOX_POLL_SECONDS:-0.5}
+    GATEWAY_MIN_DELAY_SECONDS: ${GATEWAY_MIN_DELAY_SECONDS:-2}
+    GATEWAY_MAX_DELAY_SECONDS: ${GATEWAY_MAX_DELAY_SECONDS:-5}
+    WEBHOOK_TIMEOUT_SECONDS: ${WEBHOOK_TIMEOUT_SECONDS:-10}
+    WEBHOOK_ALLOW_LOCAL: ${WEBHOOK_ALLOW_LOCAL:-false}
+    OPERATION_TIMEOUT_SECONDS: ${OPERATION_TIMEOUT_SECONDS:-20}
+    PROCESSING_LEASE_SECONDS: ${PROCESSING_LEASE_SECONDS:-90}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 60s
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-payments}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-payments}
+      POSTGRES_DB: ${POSTGRES_DB:-payments}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-payments}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-payments}
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-5673}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15673}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    <<: *app
+    command:
+      - /bin/sh
+      - -c
+      - alembic upgrade head && exec uvicorn config.api:create_app --factory --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:${API_PORT:-18000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "presentation.cli.healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  consumer:
+    <<: *app
+    command: ["payments-consumer"]
+    depends_on:
+      api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  rabbitmq_data:

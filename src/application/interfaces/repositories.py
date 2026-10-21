@@ -1,0 +1,26 @@
+from datetime import datetime
+from typing import Protocol
+from uuid import UUID
+
+from application.dtos.events import OutboxEvent
+from domain.entities.payment import Payment
+
+
+class PaymentRepository(Protocol):
+    async def get(self, payment_id: UUID, *, for_update: bool = False) -> Payment | None: ...
+
+    async def get_by_key(self, key: str) -> Payment | None: ...
+
+    async def insert(self, payment: Payment) -> bool: ...
+
+    async def save(self, payment: Payment) -> None: ...
+
+
+class OutboxRepository(Protocol):
+    async def add(self, event: OutboxEvent) -> None: ...
+
+    async def claim(self, now: datetime, lease_seconds: float) -> OutboxEvent | None: ...
+
+    async def mark_published(self, event: OutboxEvent, now: datetime) -> None: ...
+
+    async def mark_failed(self, event: OutboxEvent, now: datetime, error: str) -> None: ...
