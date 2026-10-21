@@ -25,6 +25,7 @@ dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.11,<1", "mypy>=2.4,<3"]
 
 [project.scripts]
 payments-consumer = "presentation.cli.consumer:main"
+payments-outbox = "presentation.cli.outbox:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

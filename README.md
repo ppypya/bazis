@@ -2,8 +2,8 @@
 
 Сервис принимает запросы на оплату, сохраняет платёж и событие в одной
 транзакции PostgreSQL, обрабатывает оплату асинхронно и отправляет webhook.
-Один consumer выполняет оплату и уведомление. Издатель outbox работает
-фоновым циклом в том же процессе.
+Consumer выполняет оплату и уведомление. Издатель outbox работает
+в отдельном Python-процессе и контейнере `outbox-worker`.
 
 ## Стек
 
@@ -28,7 +28,7 @@ docker compose ps
 ```
 
 Миграции выполняются в контейнере `api` перед запуском HTTP-сервера.
-Consumer стартует после готовности API и RabbitMQ.
+Consumer и outbox-worker стартуют после готовности API и RabbitMQ.
 
 | Сервис | Адрес с хоста |
 |---|---|
@@ -42,12 +42,16 @@ Consumer стартует после готовности API и RabbitMQ.
 `rabbitmq` и внутренние порты 5432/5672.
 
 ```bash
-docker compose logs -f api consumer
+docker compose logs -f api consumer outbox-worker
 docker compose stop
 docker compose start
 ```
 
 `docker compose down` удаляет контейнеры, сохраняя данные в именованных volumes.
+
+При запуске без Docker нужны три отдельных процесса: HTTP-сервер,
+`payments-consumer` и `payments-outbox` (после установки пакета и миграций).
+Издатель также можно запустить через `python -m presentation.cli.outbox`.
 
 ## API
 
@@ -179,6 +183,11 @@ API-ключ сервиса получателю webhook не передаётс
   outbox отмечается опубликованным. Потеря подтверждения допускает дубль.
 - Ошибки публикации повторяются неограниченно с задержкой до 60 секунд;
   лимит в три попытки относится к consumer.
+- Цикл outbox непосредственно ожидается основной корутиной отдельного процесса.
+  Его неожиданное завершение или отмена завершают процесс с ошибкой;
+  Compose перезапускает контейнер по политике `restart: unless-stopped`.
+  SIGTERM/SIGINT штатно останавливают цикл и закрывают подключения.
+  Зависание процесса эта политика сама по себе не обнаруживает.
 - Аренда платежа защищает от конкурентной обработки. После падения процесса
   сообщение возвращается брокером и продолжится после истечения аренды
   (по умолчанию 90 секунд). Для outbox аренда — 30 секунд.
@@ -249,15 +258,16 @@ TEST_RABBITMQ_URL=amqp://payments:payments@localhost:5673/ \
 
 Без этих переменных интеграционные тесты пропускаются. Проверяются гонки
 идемпотентности, rollback payment/outbox, повтор после потери confirm,
-конкурентная обработка, TTL, DLQ и unroutable-публикации.
+конкурентная обработка, TTL, DLQ и unroutable-публикации. Unit-тесты воркера
+проверяют закрытие ресурсов, выход процесса при сбое и остановку по сигналам.
 
 Полная проверка запущенного стека с временным HTTP-получателем требует
 локального режима в обоих процессах:
 
 ```bash
-WEBHOOK_ALLOW_LOCAL=true docker compose up -d api consumer
+WEBHOOK_ALLOW_LOCAL=true docker compose up -d api consumer outbox-worker
 docker compose exec -T api python scripts/smoke.py
-WEBHOOK_ALLOW_LOCAL=false docker compose up -d api consumer
+WEBHOOK_ALLOW_LOCAL=false docker compose up -d api consumer outbox-worker
 ```
 
 Скрипт создаёт три тестовых платежа: обычная доставка, две ошибки webhook
@@ -314,7 +324,8 @@ docs/
 scripts/
 ```
 
-`config/api.py` и `config/worker.py` создают приложения;
+`config/api.py` и `config/worker.py` создают приложения API и consumer;
+`config/outbox.py` запускает отдельный процесс публикации outbox.
 `config/ioc/container.py` содержит общую сборку зависимостей.
 
 `src` — корень исходников. Пакеты импортируются как `domain`, `application`

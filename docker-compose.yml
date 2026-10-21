@@ -79,6 +79,15 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  outbox-worker:
+    <<: *app
+    command: ["payments-outbox"]
+    depends_on:
+      api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   rabbitmq_data:
